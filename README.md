@@ -37,3 +37,13 @@
 CONFIG_MACH_XIAOMI_MONDRIAN=y
 CONFIG_QCOM_SM8475=y
 CONFIG_ARM64_VA_BITS_39=y
+## 🐳 Docker 容器支持
+
+本项目的内核配置包含了完整的 Docker 容器支持，可以在 Android 设备上运行 Docker 容器。
+
+### 启用 Docker 支持
+
+#### 构建时启用
+```bash
+# 构建带 Docker 支持的内核
+bash scripts/build-kernel.sh --device vermeer --enable-docker
