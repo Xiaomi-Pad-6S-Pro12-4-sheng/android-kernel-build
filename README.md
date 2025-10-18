@@ -37,6 +37,8 @@
 CONFIG_MACH_XIAOMI_MONDRIAN=y
 CONFIG_QCOM_SM8475=y
 CONFIG_ARM64_VA_BITS_39=y
+
+
 ## 🐳 Docker 容器支持
 
 本项目的内核配置包含了完整的 Docker 容器支持，可以在 Android 设备上运行 Docker 容器。
