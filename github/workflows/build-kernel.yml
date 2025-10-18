@@ -1,0 +1,8 @@
+    - name: 构建带 Docker 支持的内核
+      if: ${{ github.event.inputs.enable_docker == 'true' }}
+      run: |
+        bash scripts/build-kernel.sh \
+          --device ${{ matrix.device }} \
+          --toolchain ${{ github.event.inputs.toolchain || 'clang' }} \
+          --jobs $(($(nproc) + 1)) \
+          --enable-docker
