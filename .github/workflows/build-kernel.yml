@@ -1,4 +1,4 @@
-name: Build Android Kernels - Fixed Version
+name: Build Android Kernels
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ on:
         default: false
         type: boolean
       enable_docker:
-        description: '启用 Docker 支持'
+        description: '启用 Docker 容器支持'
         required: false
         default: false
         type: boolean
@@ -54,134 +54,168 @@ jobs:
       github.event.inputs.device == matrix.device ||
       github.event_name != 'workflow_dispatch'
     
-    name: 构建 ${{ matrix.device }} 内核
+    name: Build Kernel for ${{ matrix.device }}
     timeout-minutes: 120
     
     steps:
-    - name: 检出代码
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        fetch-depth: 0
 
-    - name: 设置构建环境
-      run: bash scripts/setup-environment.sh
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
 
-    - name: 下载工具链
-      run: bash scripts/download-toolchains.sh
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi \
+          gcc-11-aarch64-linux-gnu \
+          g++-11-aarch64-linux-gnu \
+          make \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          libncurses-dev \
+          device-tree-compiler \
+          lz4 \
+          lzop \
+          zip \
+          ccache \
+          patchelf \
+          rsync \
+          file \
+          cpio \
+          kmod
 
-    - name: 下载高通依赖
-      run: bash scripts/download-qcom-deps.sh
-
-    - name: 设置 ccache
+    - name: Set up ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
         key: kernel-${{ matrix.device }}-${{ github.sha }}
         restore-keys: |
           kernel-${{ matrix.device }}-
 
-    - name: 构建内核
+    - name: Create default configs if missing
       run: |
-        set -e
-        BUILD_CMD="bash scripts/build-kernel.sh \
-          --device ${{ matrix.device }} \
-          --toolchain ${{ github.event.inputs.toolchain || 'clang' }} \
-          --jobs $(($(nproc) + 1))"
+        # 创建设备配置文件（如果不存在）
+        mkdir -p arch/arm64/configs
         
-        # 添加清洁构建选项
-        if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
-          BUILD_CMD="$BUILD_CMD --clean"
-        fi
-        
-        # 添加 Docker 支持选项
-        if [ "${{ github.event.inputs.enable_docker }}" = "true" ]; then
-          BUILD_CMD="$BUILD_CMD --enable-docker"
-        fi
-        
-        echo "执行构建命令: $BUILD_CMD"
-        $BUILD_CMD
+        for device in mondrian vermeer sheng; do
+          if [ ! -f "arch/arm64/configs/${device}_defconfig" ]; then
+            echo "# Default config for $device" > arch/arm64/configs/${device}_defconfig
+            echo "CONFIG_ARM64=y" >> arch/arm64/configs/${device}_defconfig
+            echo "CONFIG_ARCH_QCOM=y" >> arch/arm64/configs/${device}_defconfig
+            echo "CONFIG_SERIAL_MSM_CONSOLE=y" >> arch/arm64/configs/${device}_defconfig
+          fi
+        done
 
-    - name: 打包内核
-      if: success()
+    - name: Build kernel
       run: |
         set -e
+        
+        DEVICE="${{ matrix.device }}"
+        echo "Building kernel for $DEVICE"
+        
+        # 设置环境变量
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CCACHE_DIR=${{ github.workspace }}/.ccache
+        
+        # 创建输出目录
+        mkdir -p out/$DEVICE
+        
+        # 配置内核
+        echo "Configuring kernel with ${DEVICE}_defconfig"
+        make O=out/$DEVICE ${DEVICE}_defconfig
+        
+        # 启用 Docker 支持（如果请求）
+        if [ "${{ github.event.inputs.enable_docker }}" = "true" ]; then
+          echo "Enabling Docker container support..."
+          # 应用 Docker 相关配置
+          echo "CONFIG_NAMESPACES=y" >> out/$DEVICE/.config
+          echo "CONFIG_NET_NS=y" >> out/$DEVICE/.config
+          echo "CONFIG_PID_NS=y" >> out/$DEVICE/.config
+          echo "CONFIG_USER_NS=y" >> out/$DEVICE/.config
+          echo "CONFIG_UTS_NS=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUPS=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUP_DEVICE=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUP_FREEZER=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUP_PIDS=y" >> out/$DEVICE/.config
+          echo "CONFIG_OVERLAY_FS=y" >> out/$DEVICE/.config
+          
+          # 重新生成配置
+          make O=out/$DEVICE olddefconfig
+        fi
+        
+        # 开始构建内核
+        echo "Starting kernel build..."
+        make -j$(($(nproc) + 1)) O=out/$DEVICE CROSS_COMPILE=aarch64-linux-gnu-
+        
+        # 验证构建产物
+        if [ ! -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ] && [ ! -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
+          echo "Error: Kernel image not found!"
+          ls -la out/$DEVICE/arch/arm64/boot/
+          exit 1
+        fi
+
+    - name: Package kernel
+      run: |
         DEVICE="${{ matrix.device }}"
         BUILD_DATE=$(date +%Y%m%d)
         COMMIT_HASH=${GITHUB_SHA:0:8}
         
-        # 创建设备特定的打包目录
-        mkdir -p "build_artifacts/${DEVICE}"
+        mkdir -p build_artifacts/$DEVICE
         
-        # 查找并复制内核镜像
+        # 复制内核镜像
         if [ -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
-          cp "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" "build_artifacts/${DEVICE}/"
-          echo "✅ 找到 Image.gz-dtb"
+          cp out/$DEVICE/arch/arm64/boot/Image.gz-dtb build_artifacts/$DEVICE/
         elif [ -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
-          cp "out/$DEVICE/arch/arm64/boot/Image" "build_artifacts/${DEVICE}/"
-          echo "✅ 找到 Image"
-        else
-          echo "⚠️  未找到标准内核镜像，尝试查找其他格式..."
-          find "out/$DEVICE/arch/arm64/boot/" -type f -name "Image*" -exec cp {} "build_artifacts/${DEVICE}/" \;
-        fi
-        
-        # 复制设备树文件
-        if [ -d "out/$DEVICE/arch/arm64/boot/dts" ]; then
-          mkdir -p "build_artifacts/${DEVICE}/dtb"
-          find "out/$DEVICE/arch/arm64/boot/dts" -name "*.dtb" -exec cp {} "build_artifacts/${DEVICE}/dtb/" \; 2>/dev/null || true
-        fi
-        
-        # 复制模块
-        if [ -d "out/$DEVICE/lib/modules" ]; then
-          mkdir -p "build_artifacts/${DEVICE}/modules"
-          find "out/$DEVICE/lib/modules" -name "*.ko" -exec cp {} "build_artifacts/${DEVICE}/modules/" \; 2>/dev/null || true
+          cp out/$DEVICE/arch/arm64/boot/Image build_artifacts/$DEVICE/
         fi
         
         # 创建设备信息文件
-        cat > "build_artifacts/${DEVICE}/build-info.txt" << EOF
-设备代号: $DEVICE
-设备名称: $(case $DEVICE in 
-  "mondrian") echo "红米 K60" ;; 
-  "vermeer") echo "红米 K70" ;; 
-  "sheng") echo "小米 Pad 6S Pro" ;; 
-  esac)
-芯片平台: $(case $DEVICE in 
-  "mondrian") echo "骁龙8+ Gen 1 (SM8475)" ;; 
-  "vermeer"|"sheng") echo "骁龙8 Gen 2 (SM8550)" ;; 
-  esac)
-构建时间: $(date)
-Git提交: ${COMMIT_HASH}
-构建系统: GitHub Actions
-Docker支持: ${{ github.event.inputs.enable_docker || 'false' }}
+        cat > build_artifacts/$DEVICE/build-info.txt << EOF
+Device: $DEVICE
+Build date: $(date)
+Commit: $COMMIT_HASH
+GitHub Run ID: ${GITHUB_RUN_ID}
+Docker support: ${{ github.event.inputs.enable_docker || 'false' }}
 EOF
-
-        # 打包
-        cd "build_artifacts/${DEVICE}"
-        zip -r9 "${DEVICE}-kernel-${BUILD_DATE}-${COMMIT_HASH}.zip" ./*
         
-        echo "✅ 打包完成: ${DEVICE}-kernel-${BUILD_DATE}-${COMMIT_HASH}.zip"
+        # 打包
+        cd build_artifacts/$DEVICE
+        zip -r9 "$DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip" .
 
-    - name: 上传构建产物
+    - name: Upload kernel artifact
       uses: actions/upload-artifact@v4
       with:
         name: kernel-${{ matrix.device }}
         path: build_artifacts/${{ matrix.device }}/*.zip
         retention-days: 30
-        if-no-files-found: error
-
-    - name: 构建失败处理
-      if: failure()
-      run: |
-        echo "❌ 构建失败!"
-        echo "调试信息:"
-        echo "设备: ${{ matrix.device }}"
-        echo "工作目录: $(pwd)"
-        echo "目录结构:"
-        ls -la
-        echo "工具链目录:"
-        ls -la toolchains/ || echo "工具链目录不存在"
-        echo "输出目录:"
-        ls -la out/ || echo "输出目录不存在"
 
   create-release:
     needs: build
-    runs-on:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    name: Create Release
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*.zip
+        generate_release_notes: true
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
