@@ -1,135 +1,96 @@
-name: Build Android Kernels - Snapdragon 8 Series
+name: Build GKI Kernel with China Mirrors
 
 on:
   workflow_dispatch:
     inputs:
-      device:
-        description: '目标设备'
+      kernel_version:
+        description: 'Kernel Version'
         required: true
+        default: '5.10'
         type: choice
         options:
-        - mondrian  # 红米 K60
-        - vermeer   # 红米 K70
-        - sheng     # 小米 Pad 6S Pro
-      toolchain:
-        description: '工具链选择'
-        required: false
-        default: 'clang'
+        - '5.10'
+        - '5.15'
+      target_arch:
+        description: 'Target Architecture'
+        required: true
+        default: 'arm64'
         type: choice
         options:
-        - clang
-        - gcc
-      clean_build:
-        description: '清洁构建'
-        required: false
-        default: false
-        type: boolean
-
-  push:
-    branches: [main, master]
-    tags: ['v*']
-
-  pull_request:
-    branches: [main, master]
+        - 'arm64'
+        - 'arm'
 
 env:
-  USE_CCACHE: 1
-  CCACHE_EXEC: /usr/bin/ccache
-  CCACHE_MAXSIZE: 5G
+  TSINGHUA_MIRROR: https://mirrors.tuna.tsinghua.edu.cn
+  AOSP_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/git/AOSP
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        device: [mondrian, vermeer, sheng]  # 修正：使用正确的设备代号
-    # 如果指定了特定设备，只构建该设备
-    if: |
-      github.event_name == 'workflow_dispatch' && 
-      github.event.inputs.device == matrix.device ||
-      github.event_name != 'workflow_dispatch'
-    
-    name: 构建 ${{ matrix.device }} 内核
-    timeout-minutes: 120
     
     steps:
-    - name: 检出代码
+    - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: 设置构建环境
-      run: bash scripts/setup-environment.sh
-
-    - name: 下载工具链
-      run: bash scripts/download-toolchains.sh
-
-    - name: 下载高通依赖
-      run: bash scripts/download-qcom-deps.sh
-
-    - name: 设置 ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: kernel-${{ matrix.device }}-${{ github.sha }}
-        restore-keys: |
-          kernel-${{ matrix.device }}-
-
-    - name: 构建内核
+      
+    - name: Setup build environment with China mirrors
       run: |
-        bash scripts/build-kernel.sh \
-          --device ${{ matrix.device }} \
-          --toolchain ${{ github.event.inputs.toolchain || 'clang' }} \
-          --jobs $(($(nproc) + 1)) \
-          --apply-patches true
-
-    - name: 打包内核
+        # 替换 APT 源为清华镜像
+        sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
+        sudo sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
+        sudo apt-get update
+        
+        # 安装依赖
+        sudo apt-get install -y \
+          git build-essential libncurses-dev \
+          bison flex libssl-dev libelf-dev \
+          bc python3 python3-pip wget curl
+          
+    - name: Clone kernel sources from mirror
       run: |
-        DEVICE="${{ matrix.device }}"
-        BUILD_DATE=$(date +%Y%m%d)
-        COMMIT_HASH=${GITHUB_SHA:0:8}
+        git clone ${{ env.AOSP_MIRROR }}/kernel/common.git kernel-source
+        cd kernel-source
         
-        # 创建设备特定的打包目录
-        mkdir -p build_artifacts/$DEVICE
-        
-        # 复制内核镜像
-        cp out/$DEVICE/arch/arm64/boot/Image.gz-dtb build_artifacts/$DEVICE/
-        
-        # 复制设备树文件
-        if [ -d "out/$DEVICE/arch/arm64/boot/dts" ]; then
-          mkdir -p build_artifacts/$DEVICE/dtb
-          find out/$DEVICE/arch/arm64/boot/dts -name "*.dtb" -exec cp {} build_artifacts/$DEVICE/dtb/ \; 2>/dev/null || true
+        # 根据版本切换分支
+        if [ "${{ github.event.inputs.kernel_version }}" = "5.10" ]; then
+          git checkout android12-5.10
+        else
+          git checkout android13-5.15
         fi
         
-        # 复制模块
-        if [ -d "out/$DEVICE/lib/modules" ]; then
-          mkdir -p build_artifacts/$DEVICE/modules
-          find out/$DEVICE/lib/modules -name "*.ko" -exec cp {} build_artifacts/$DEVICE/modules/ \;
-        fi
+    - name: Download toolchain from mirror
+      run: |
+        git clone ${{ env.AOSP_MIRROR }}/platform/prebuilts/clang/host/linux-x86.git clang-toolchain
+        git clone ${{ env.AOSP_MIRROR }}/platform/prebuilts/gas/linux-x86.git gas-toolchain
         
-        # 创建设备信息文件
-        cat > build_artifacts/$DEVICE/device-info.txt << EOF
-设备代号: $DEVICE
-设备名称: $(case $DEVICE in 
-  "mondrian") echo "红米 K60" ;; 
-  "vermeer") echo "红米 K70" ;; 
-  "sheng") echo "小米 Pad 6S Pro" ;; 
-  esac)
-芯片平台: $(case $DEVICE in 
-  "mondrian") echo "骁龙8+ Gen 1 (SM8475)" ;; 
-  "vermeer"|"sheng") echo "骁龙8 Gen 2 (SM8550)" ;; 
-  esac)
-构建时间: $(date)
-Git提交: ${COMMIT_HASH}
-构建系统: GitHub Actions
-EOF
-
-        # 打包
-        cd build_artifacts/$DEVICE
-        zip -r9 "$DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip" .
-
-    - name: 上传构建产物
+    - name: Build kernel
+      run: |
+        cd kernel-source
+        
+        # 设置环境
+        export ARCH=${{ github.event.inputs.target_arch }}
+        export CLANG_TOOLCHAIN="../clang-toolchain/bin"
+        
+        # 配置内核
+        make ARCH=$ARCH CC="$CLANG_TOOLCHAIN/clang" gki_defconfig
+        
+        # 应用命名空间配置
+        ./scripts/config --file .config -e CONFIG_NAMESPACES
+        ./scripts/config --file .config -e CONFIG_UTS_NS
+        ./scripts/config --file .config -e CONFIG_IPC_NS
+        ./scripts/config --file .config -e CONFIG_USER_NS
+        ./scripts/config --file .config -e CONFIG_PID_NS
+        ./scripts/config --file .config -e CONFIG_NET_NS
+        ./scripts/config --file .config -e CONFIG_MNT_NS
+        
+        make ARCH=$ARCH olddefconfig
+        
+        # 编译
+        make ARCH=$ARCH CC="$CLANG_TOOLCHAIN/clang" -j$(nproc)
+        
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ matrix.device }}
-        path: build_artifacts/${{ matrix.device }}/*.zip
-        retention-days: 30
+        name: gki-kernel-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.target_arch }}
+        path: |
+          kernel-source/arch/${{ github.event.inputs.target_arch }}/boot/
+          kernel-source/.config
