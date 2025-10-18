@@ -34,9 +34,6 @@ on:
     branches: [main, master]
     tags: ['v*']
 
-  pull_request:
-    branches: [main, master]
-
 env:
   USE_CCACHE: 1
   CCACHE_EXEC: /usr/bin/ccache
@@ -63,19 +60,16 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-
-    - name: Install dependencies
+    - name: Install all build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi \
-          gcc-11-aarch64-linux-gnu \
-          g++-11-aarch64-linux-gnu \
+          build-essential \
+          git \
+          curl \
+          wget \
+          python3 \
+          python3-pip \
           make \
           bc \
           bison \
@@ -87,12 +81,34 @@ jobs:
           lz4 \
           lzop \
           zip \
+          tar \
           ccache \
           patchelf \
           rsync \
+          gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi \
+          gcc-11-aarch64-linux-gnu \
+          g++-11-aarch64-linux-gnu \
+          xmlstarlet \
+          openssl \
           file \
           cpio \
-          kmod
+          kmod \
+          pkg-config \
+          libgmp-dev \
+          libmpc-dev \
+          libmpfr-dev \
+          libisl-dev
+
+    - name: Install Python dependencies
+      run: |
+        pip3 install --upgrade pip
+        pip3 install \
+          pycrypto \
+          pyelftools \
+          protobuf \
+          google \
+          requests
 
     - name: Set up ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -101,17 +117,52 @@ jobs:
         restore-keys: |
           kernel-${{ matrix.device }}-
 
-    - name: Create default configs if missing
+    - name: Create device configs if missing
       run: |
-        # 创建设备配置文件（如果不存在）
+        echo "Creating device configuration files..."
         mkdir -p arch/arm64/configs
         
+        # 为每个设备创建基础配置文件
         for device in mondrian vermeer sheng; do
-          if [ ! -f "arch/arm64/configs/${device}_defconfig" ]; then
-            echo "# Default config for $device" > arch/arm64/configs/${device}_defconfig
-            echo "CONFIG_ARM64=y" >> arch/arm64/configs/${device}_defconfig
-            echo "CONFIG_ARCH_QCOM=y" >> arch/arm64/configs/${device}_defconfig
-            echo "CONFIG_SERIAL_MSM_CONSOLE=y" >> arch/arm64/configs/${device}_defconfig
+          CONFIG_FILE="arch/arm64/configs/${device}_defconfig"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "# Default configuration for $device" > "$CONFIG_FILE"
+            echo "CONFIG_ARM64=y" >> "$CONFIG_FILE"
+            echo "CONFIG_ARCH_QCOM=y" >> "$CONFIG_FILE"
+            echo "CONFIG_SMP=y" >> "$CONFIG_FILE"
+            echo "CONFIG_HOTPLUG_CPU=y" >> "$CONFIG_FILE"
+            echo "CONFIG_DEVTMPFS=y" >> "$CONFIG_FILE"
+            echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_BLK_DEV_INITRD=y" >> "$CONFIG_FILE"
+            echo "CONFIG_CMA=y" >> "$CONFIG_FILE"
+            echo "CONFIG_PM_DEVFREQ=y" >> "$CONFIG_FILE"
+            echo "CONFIG_CPU_FREQ=y" >> "$CONFIG_FILE"
+            echo "CONFIG_CPUFREQ_DT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_ACPI=y" >> "$CONFIG_FILE"
+            echo "CONFIG_CPU_IDLE=y" >> "$CONFIG_FILE"
+            echo "CONFIG_NET=y" >> "$CONFIG_FILE"
+            echo "CONFIG_INET=y" >> "$CONFIG_FILE"
+            echo "CONFIG_IP_MULTICAST=y" >> "$CONFIG_FILE"
+            
+            # 设备特定配置
+            case $device in
+              mondrian)
+                echo "CONFIG_MACH_XIAOMI_MONDRIAN=y" >> "$CONFIG_FILE"
+                echo "CONFIG_QCOM_SM8475=y" >> "$CONFIG_FILE"
+                ;;
+              vermeer)
+                echo "CONFIG_MACH_XIAOMI_VERMEER=y" >> "$CONFIG_FILE"
+                echo "CONFIG_QCOM_SM8550=y" >> "$CONFIG_FILE"
+                ;;
+              sheng)
+                echo "CONFIG_MACH_XIAOMI_SHENG=y" >> "$CONFIG_FILE"
+                echo "CONFIG_QCOM_SM8550=y" >> "$CONFIG_FILE"
+                echo "CONFIG_INPUT_TOUCHSCREEN=y" >> "$CONFIG_FILE"
+                ;;
+            esac
+            echo "Created $CONFIG_FILE"
+          else
+            echo "$CONFIG_FILE already exists"
           fi
         done
 
@@ -120,7 +171,7 @@ jobs:
         set -e
         
         DEVICE="${{ matrix.device }}"
-        echo "Building kernel for $DEVICE"
+        echo "🔨 Building kernel for $DEVICE"
         
         # 设置环境变量
         export ARCH=arm64
@@ -130,37 +181,68 @@ jobs:
         # 创建输出目录
         mkdir -p out/$DEVICE
         
+        # 检查配置文件是否存在
+        if [ ! -f "arch/arm64/configs/${DEVICE}_defconfig" ]; then
+          echo "❌ Error: ${DEVICE}_defconfig not found!"
+          exit 1
+        fi
+        
+        echo "📋 Configuring kernel with ${DEVICE}_defconfig"
+        
         # 配置内核
-        echo "Configuring kernel with ${DEVICE}_defconfig"
         make O=out/$DEVICE ${DEVICE}_defconfig
         
         # 启用 Docker 支持（如果请求）
         if [ "${{ github.event.inputs.enable_docker }}" = "true" ]; then
-          echo "Enabling Docker container support..."
+          echo "🐳 Enabling Docker container support..."
           # 应用 Docker 相关配置
           echo "CONFIG_NAMESPACES=y" >> out/$DEVICE/.config
           echo "CONFIG_NET_NS=y" >> out/$DEVICE/.config
           echo "CONFIG_PID_NS=y" >> out/$DEVICE/.config
           echo "CONFIG_USER_NS=y" >> out/$DEVICE/.config
           echo "CONFIG_UTS_NS=y" >> out/$DEVICE/.config
+          echo "CONFIG_IPC_NS=y" >> out/$DEVICE/.config
           echo "CONFIG_CGROUPS=y" >> out/$DEVICE/.config
           echo "CONFIG_CGROUP_DEVICE=y" >> out/$DEVICE/.config
           echo "CONFIG_CGROUP_FREEZER=y" >> out/$DEVICE/.config
           echo "CONFIG_CGROUP_PIDS=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUP_CPUACCT=y" >> out/$DEVICE/.config
+          echo "CONFIG_CGROUP_SCHED=y" >> out/$DEVICE/.config
           echo "CONFIG_OVERLAY_FS=y" >> out/$DEVICE/.config
+          echo "CONFIG_VETH=y" >> out/$DEVICE/.config
+          echo "CONFIG_BRIDGE=y" >> out/$DEVICE/.config
+          echo "CONFIG_BRIDGE_NETFILTER=y" >> out/$DEVICE/.config
+          echo "CONFIG_IP_NF_FILTER=y" >> out/$DEVICE/.config
+          echo "CONFIG_IP_NF_TARGET_MASQUERADE=y" >> out/$DEVICE/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> out/$DEVICE/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y" >> out/$DEVICE/.config
+          echo "CONFIG_NF_NAT=y" >> out/$DEVICE/.config
+          echo "CONFIG_NF_NAT_NEEDED=y" >> out/$DEVICE/.config
           
           # 重新生成配置
           make O=out/$DEVICE olddefconfig
         fi
         
         # 开始构建内核
-        echo "Starting kernel build..."
+        echo "🚀 Starting kernel build..."
         make -j$(($(nproc) + 1)) O=out/$DEVICE CROSS_COMPILE=aarch64-linux-gnu-
         
+        # 构建模块
+        echo "📦 Building kernel modules..."
+        make -j$(($(nproc) + 1)) O=out/$DEVICE CROSS_COMPILE=aarch64-linux-gnu- modules || echo "⚠️ Module build failed, continuing..."
+        
         # 验证构建产物
-        if [ ! -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ] && [ ! -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
-          echo "Error: Kernel image not found!"
-          ls -la out/$DEVICE/arch/arm64/boot/
+        echo "🔍 Verifying build artifacts..."
+        if [ -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "✅ Kernel image found: out/$DEVICE/arch/arm64/boot/Image.gz-dtb"
+          ls -lh "out/$DEVICE/arch/arm64/boot/Image.gz-dtb"
+        elif [ -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
+          echo "✅ Kernel image found: out/$DEVICE/arch/arm64/boot/Image"
+          ls -lh "out/$DEVICE/arch/arm64/boot/Image"
+        else
+          echo "❌ Error: Kernel image not found!"
+          echo "📁 Contents of output directory:"
+          ls -la "out/$DEVICE/arch/arm64/boot/"
           exit 1
         fi
 
@@ -175,22 +257,51 @@ jobs:
         # 复制内核镜像
         if [ -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
           cp out/$DEVICE/arch/arm64/boot/Image.gz-dtb build_artifacts/$DEVICE/
+          KERNEL_IMAGE="Image.gz-dtb"
         elif [ -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
           cp out/$DEVICE/arch/arm64/boot/Image build_artifacts/$DEVICE/
+          KERNEL_IMAGE="Image"
+        else
+          echo "❌ Error: No kernel image found for packaging"
+          exit 1
+        fi
+        
+        # 复制设备树文件（如果存在）
+        if [ -d "out/$DEVICE/arch/arm64/boot/dts" ]; then
+          mkdir -p build_artifacts/$DEVICE/dtb
+          find out/$DEVICE/arch/arm64/boot/dts -name "*.dtb" -exec cp {} build_artifacts/$DEVICE/dtb/ \; 2>/dev/null || true
+        fi
+        
+        # 复制模块（如果存在）
+        if [ -d "out/$DEVICE/lib/modules" ]; then
+          mkdir -p build_artifacts/$DEVICE/modules
+          find out/$DEVICE/lib/modules -name "*.ko" -exec cp {} build_artifacts/$DEVICE/modules/ \; 2>/dev/null || true
         fi
         
         # 创建设备信息文件
         cat > build_artifacts/$DEVICE/build-info.txt << EOF
 Device: $DEVICE
-Build date: $(date)
-Commit: $COMMIT_HASH
+Device Name: $(case $DEVICE in 
+  "mondrian") echo "Redmi K60" ;; 
+  "vermeer") echo "Redmi K70" ;; 
+  "sheng") echo "Xiaomi Pad 6S Pro" ;; 
+  esac)
+Chipset: $(case $DEVICE in 
+  "mondrian") echo "Snapdragon 8+ Gen 1 (SM8475)" ;; 
+  "vermeer"|"sheng") echo "Snapdragon 8 Gen 2 (SM8550)" ;; 
+  esac)
+Kernel Image: $KERNEL_IMAGE
+Build Date: $(date)
+Git Commit: $COMMIT_HASH
 GitHub Run ID: ${GITHUB_RUN_ID}
-Docker support: ${{ github.event.inputs.enable_docker || 'false' }}
+Docker Support: ${{ github.event.inputs.enable_docker || 'false' }}
 EOF
         
         # 打包
         cd build_artifacts/$DEVICE
         zip -r9 "$DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip" .
+        
+        echo "✅ Package created: $DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip"
 
     - name: Upload kernel artifact
       uses: actions/upload-artifact@v4
