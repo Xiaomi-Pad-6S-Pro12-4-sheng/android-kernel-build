@@ -1,332 +1,202 @@
-name: Build Android Kernels
+name: Build Xiaomi Pad 6S Pro Kernel
 
 on:
   workflow_dispatch:
     inputs:
       device:
-        description: '目标设备'
+        description: '设备代号'
         required: true
-        type: choice
-        options:
-        - mondrian
-        - vermeer
-        - sheng
+        default: 'sheng'
+        type: string
+      kernel_version:
+        description: '内核版本'
+        required: true
+        default: '5.15'
+        type: string
       toolchain:
         description: '工具链选择'
-        required: false
+        required: true
         default: 'clang'
         type: choice
         options:
-        - clang
-        - gcc
+          - clang
+          - gcc
+      enable_docker:
+        description: '启用Docker支持'
+        required: true
+        default: false
+        type: boolean
       clean_build:
         description: '清洁构建'
-        required: false
-        default: false
+        required: true
+        default: true
         type: boolean
-      enable_docker:
-        description: '启用 Docker 容器支持'
-        required: false
-        default: false
-        type: boolean
-
+  
+  # 也可以通过push触发
   push:
-    branches: [main, master]
-    tags: ['v*']
-
-env:
-  USE_CCACHE: 1
-  CCACHE_EXEC: /usr/bin/ccache
-  CCACHE_MAXSIZE: 5G
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - '.github/**'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        device: [mondrian, vermeer, sheng]
-    # 如果指定了特定设备，只构建该设备
-    if: |
-      github.event_name == 'workflow_dispatch' && 
-      github.event.inputs.device == matrix.device ||
-      github.event_name != 'workflow_dispatch'
-    
-    name: Build Kernel for ${{ matrix.device }}
-    timeout-minutes: 120
+    name: 构建内核
+    runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: Install all build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          git \
-          curl \
-          wget \
-          python3 \
-          python3-pip \
-          make \
-          bc \
-          bison \
-          flex \
-          libssl-dev \
-          libelf-dev \
-          libncurses-dev \
-          device-tree-compiler \
-          lz4 \
-          lzop \
-          zip \
-          tar \
-          ccache \
-          patchelf \
-          rsync \
-          gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi \
-          gcc-11-aarch64-linux-gnu \
-          g++-11-aarch64-linux-gnu \
-          xmlstarlet \
-          openssl \
-          file \
-          cpio \
-          kmod \
-          pkg-config \
-          libgmp-dev \
-          libmpc-dev \
-          libmpfr-dev \
-          libisl-dev
-
-    - name: Install Python dependencies
-      run: |
-        pip3 install --upgrade pip
-        pip3 install \
-          pycrypto \
-          pyelftools \
-          protobuf \
-          google \
-          requests
-
-    - name: Set up ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: kernel-${{ matrix.device }}-${{ github.sha }}
-        restore-keys: |
-          kernel-${{ matrix.device }}-
-
-    - name: Create device configs if missing
-      run: |
-        echo "Creating device configuration files..."
-        mkdir -p arch/arm64/configs
-        
-        # 为每个设备创建基础配置文件
-        for device in mondrian vermeer sheng; do
-          CONFIG_FILE="arch/arm64/configs/${device}_defconfig"
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "# Default configuration for $device" > "$CONFIG_FILE"
-            echo "CONFIG_ARM64=y" >> "$CONFIG_FILE"
-            echo "CONFIG_ARCH_QCOM=y" >> "$CONFIG_FILE"
-            echo "CONFIG_SMP=y" >> "$CONFIG_FILE"
-            echo "CONFIG_HOTPLUG_CPU=y" >> "$CONFIG_FILE"
-            echo "CONFIG_DEVTMPFS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_BLK_DEV_INITRD=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CMA=y" >> "$CONFIG_FILE"
-            echo "CONFIG_PM_DEVFREQ=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CPU_FREQ=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CPUFREQ_DT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_ACPI=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CPU_IDLE=y" >> "$CONFIG_FILE"
-            echo "CONFIG_NET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_INET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_MULTICAST=y" >> "$CONFIG_FILE"
-            
-            # 设备特定配置
-            case $device in
-              mondrian)
-                echo "CONFIG_MACH_XIAOMI_MONDRIAN=y" >> "$CONFIG_FILE"
-                echo "CONFIG_QCOM_SM8475=y" >> "$CONFIG_FILE"
-                ;;
-              vermeer)
-                echo "CONFIG_MACH_XIAOMI_VERMEER=y" >> "$CONFIG_FILE"
-                echo "CONFIG_QCOM_SM8550=y" >> "$CONFIG_FILE"
-                ;;
-              sheng)
-                echo "CONFIG_MACH_XIAOMI_SHENG=y" >> "$CONFIG_FILE"
-                echo "CONFIG_QCOM_SM8550=y" >> "$CONFIG_FILE"
-                echo "CONFIG_INPUT_TOUCHSCREEN=y" >> "$CONFIG_FILE"
-                ;;
-            esac
-            echo "Created $CONFIG_FILE"
-          else
-            echo "$CONFIG_FILE already exists"
+      - name: 检查代码
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
+      - name: 设置环境变量
+        run: |
+          echo "DEVICE=${{ github.event.inputs.device || 'sheng' }}" >> $GITHUB_ENV
+          echo "KERNEL_VERSION=${{ github.event.inputs.kernel_version || '5.15' }}" >> $GITHUB_ENV
+          echo "TOOLCHAIN=${{ github.event.inputs.toolchain || 'clang' }}" >> $GITHUB_ENV
+          echo "ENABLE_DOCKER=${{ github.event.inputs.enable_docker || 'false' }}" >> $GITHUB_ENV
+          echo "CLEAN_BUILD=${{ github.event.inputs.clean_build || 'true' }}" >> $GITHUB_ENV
+          echo "ROOT_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "OUTPUT_DIR=$(pwd)/out/${{ github.event.inputs.device || 'sheng' }}" >> $GITHUB_ENV
+      
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              libncurses5-dev \
+              libssl-dev \
+              flex \
+              bison \
+              libelf-dev \
+              libdw-dev \
+              zlib1g-dev \
+              binutils-dev \
+              libiberty-dev \
+              git \
+              ccache \
+              curl \
+              wget \
+              unzip \
+              python3 \
+              python3-pip \
+              rsync \
+              bc \
+              dwarves
+      
+      - name: 安装Python依赖
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyelftools
+      
+      - name: 配置ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-ccache-
+          max-size: 10G
+      
+      - name: 设置构建环境
+        run: |
+          bash scripts/setup-environment.sh
+      
+      - name: 下载工具链
+        run: |
+          bash scripts/download-toolchains.sh
+      
+      - name: 下载高通依赖
+        run: |
+          bash scripts/download-qcom-deps.sh
+      
+      - name: 启用Docker支持（如果需要）
+        if: env.ENABLE_DOCKER == 'true'
+        run: |
+          echo "[*] 准备Docker支持配置"
+          # 内核构建时会自动应用Docker配置
+      
+      - name: 构建内核
+        run: |
+          BUILD_ARGS="-d $DEVICE -k $KERNEL_VERSION -t $TOOLCHAIN"
+          if [ "$CLEAN_BUILD" = "true" ]; then
+              BUILD_ARGS="$BUILD_ARGS --clean"
           fi
-        done
-
-    - name: Build kernel
-      run: |
-        set -e
-        
-        DEVICE="${{ matrix.device }}"
-        echo "🔨 Building kernel for $DEVICE"
-        
-        # 设置环境变量
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CCACHE_DIR=${{ github.workspace }}/.ccache
-        
-        # 创建输出目录
-        mkdir -p out/$DEVICE
-        
-        # 检查配置文件是否存在
-        if [ ! -f "arch/arm64/configs/${DEVICE}_defconfig" ]; then
-          echo "❌ Error: ${DEVICE}_defconfig not found!"
-          exit 1
-        fi
-        
-        echo "📋 Configuring kernel with ${DEVICE}_defconfig"
-        
-        # 配置内核
-        make O=out/$DEVICE ${DEVICE}_defconfig
-        
-        # 启用 Docker 支持（如果请求）
-        if [ "${{ github.event.inputs.enable_docker }}" = "true" ]; then
-          echo "🐳 Enabling Docker container support..."
-          # 应用 Docker 相关配置
-          echo "CONFIG_NAMESPACES=y" >> out/$DEVICE/.config
-          echo "CONFIG_NET_NS=y" >> out/$DEVICE/.config
-          echo "CONFIG_PID_NS=y" >> out/$DEVICE/.config
-          echo "CONFIG_USER_NS=y" >> out/$DEVICE/.config
-          echo "CONFIG_UTS_NS=y" >> out/$DEVICE/.config
-          echo "CONFIG_IPC_NS=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUPS=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUP_DEVICE=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUP_FREEZER=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUP_PIDS=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUP_CPUACCT=y" >> out/$DEVICE/.config
-          echo "CONFIG_CGROUP_SCHED=y" >> out/$DEVICE/.config
-          echo "CONFIG_OVERLAY_FS=y" >> out/$DEVICE/.config
-          echo "CONFIG_VETH=y" >> out/$DEVICE/.config
-          echo "CONFIG_BRIDGE=y" >> out/$DEVICE/.config
-          echo "CONFIG_BRIDGE_NETFILTER=y" >> out/$DEVICE/.config
-          echo "CONFIG_IP_NF_FILTER=y" >> out/$DEVICE/.config
-          echo "CONFIG_IP_NF_TARGET_MASQUERADE=y" >> out/$DEVICE/.config
-          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> out/$DEVICE/.config
-          echo "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y" >> out/$DEVICE/.config
-          echo "CONFIG_NF_NAT=y" >> out/$DEVICE/.config
-          echo "CONFIG_NF_NAT_NEEDED=y" >> out/$DEVICE/.config
+          if [ "$ENABLE_DOCKER" = "true" ]; then
+              BUILD_ARGS="$BUILD_ARGS --enable-docker"
+          fi
+          bash scripts/build-kernel.sh $BUILD_ARGS
+      
+      - name: 验证构建结果
+        run: |
+          echo "[*] 验证构建产物..."
+          if [ -f "$OUTPUT_DIR/Image.gz-dtb" ]; then
+              echo "✅ 内核镜像存在"
+              ls -lh "$OUTPUT_DIR/Image.gz-dtb"
+          else
+              echo "❌ 内核镜像不存在！"
+              exit 1
+          fi
           
-          # 重新生成配置
-          make O=out/$DEVICE olddefconfig
-        fi
-        
-        # 开始构建内核
-        echo "🚀 Starting kernel build..."
-        make -j$(($(nproc) + 1)) O=out/$DEVICE CROSS_COMPILE=aarch64-linux-gnu-
-        
-        # 构建模块
-        echo "📦 Building kernel modules..."
-        make -j$(($(nproc) + 1)) O=out/$DEVICE CROSS_COMPILE=aarch64-linux-gnu- modules || echo "⚠️ Module build failed, continuing..."
-        
-        # 验证构建产物
-        echo "🔍 Verifying build artifacts..."
-        if [ -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
-          echo "✅ Kernel image found: out/$DEVICE/arch/arm64/boot/Image.gz-dtb"
-          ls -lh "out/$DEVICE/arch/arm64/boot/Image.gz-dtb"
-        elif [ -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
-          echo "✅ Kernel image found: out/$DEVICE/arch/arm64/boot/Image"
-          ls -lh "out/$DEVICE/arch/arm64/boot/Image"
-        else
-          echo "❌ Error: Kernel image not found!"
-          echo "📁 Contents of output directory:"
-          ls -la "out/$DEVICE/arch/arm64/boot/"
-          exit 1
-        fi
-
-    - name: Package kernel
-      run: |
-        DEVICE="${{ matrix.device }}"
-        BUILD_DATE=$(date +%Y%m%d)
-        COMMIT_HASH=${GITHUB_SHA:0:8}
-        
-        mkdir -p build_artifacts/$DEVICE
-        
-        # 复制内核镜像
-        if [ -f "out/$DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
-          cp out/$DEVICE/arch/arm64/boot/Image.gz-dtb build_artifacts/$DEVICE/
-          KERNEL_IMAGE="Image.gz-dtb"
-        elif [ -f "out/$DEVICE/arch/arm64/boot/Image" ]; then
-          cp out/$DEVICE/arch/arm64/boot/Image build_artifacts/$DEVICE/
-          KERNEL_IMAGE="Image"
-        else
-          echo "❌ Error: No kernel image found for packaging"
-          exit 1
-        fi
-        
-        # 复制设备树文件（如果存在）
-        if [ -d "out/$DEVICE/arch/arm64/boot/dts" ]; then
-          mkdir -p build_artifacts/$DEVICE/dtb
-          find out/$DEVICE/arch/arm64/boot/dts -name "*.dtb" -exec cp {} build_artifacts/$DEVICE/dtb/ \; 2>/dev/null || true
-        fi
-        
-        # 复制模块（如果存在）
-        if [ -d "out/$DEVICE/lib/modules" ]; then
-          mkdir -p build_artifacts/$DEVICE/modules
-          find out/$DEVICE/lib/modules -name "*.ko" -exec cp {} build_artifacts/$DEVICE/modules/ \; 2>/dev/null || true
-        fi
-        
-        # 创建设备信息文件
-        cat > build_artifacts/$DEVICE/build-info.txt << EOF
-Device: $DEVICE
-Device Name: $(case $DEVICE in 
-  "mondrian") echo "Redmi K60" ;; 
-  "vermeer") echo "Redmi K70" ;; 
-  "sheng") echo "Xiaomi Pad 6S Pro" ;; 
-  esac)
-Chipset: $(case $DEVICE in 
-  "mondrian") echo "Snapdragon 8+ Gen 1 (SM8475)" ;; 
-  "vermeer"|"sheng") echo "Snapdragon 8 Gen 2 (SM8550)" ;; 
-  esac)
-Kernel Image: $KERNEL_IMAGE
-Build Date: $(date)
-Git Commit: $COMMIT_HASH
-GitHub Run ID: ${GITHUB_RUN_ID}
-Docker Support: ${{ github.event.inputs.enable_docker || 'false' }}
-EOF
-        
-        # 打包
-        cd build_artifacts/$DEVICE
-        zip -r9 "$DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip" .
-        
-        echo "✅ Package created: $DEVICE-kernel-$BUILD_DATE-$COMMIT_HASH.zip"
-
-    - name: Upload kernel artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-${{ matrix.device }}
-        path: build_artifacts/${{ matrix.device }}/*.zip
-        retention-days: 30
-
-  create-release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    name: Create Release
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-        
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/**/*.zip
-        generate_release_notes: true
-        draft: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if [ -d "$OUTPUT_DIR/dtb" ]; then
+              echo "✅ 设备树目录存在"
+              ls -lh "$OUTPUT_DIR/dtb/" || true
+          else
+              echo "⚠️  设备树目录可能不存在"
+          fi
+      
+      - name: 打包构建产物
+        run: |
+          echo "[*] 打包构建产物..."
+          mkdir -p build_artifacts
+          cp -r "$OUTPUT_DIR"/* build_artifacts/
+          cp README.md build_artifacts/
+          
+          # 生成构建信息
+          cat > build_artifacts/online-build-info.txt << EOF
+          # 在线构建信息
+          构建时间: $(date)
+          构建ID: ${{ github.run_id }}
+          构建SHA: ${{ github.sha }}
+          设备: $DEVICE
+          内核版本: $KERNEL_VERSION
+          工具链: $TOOLCHAIN
+          Docker支持: $ENABLE_DOCKER
+          工作流URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          
+          # 创建压缩包
+          tar -czf "xiaomi-pad-6s-pro-kernel-${{ github.run_id }}.tar.gz" build_artifacts/
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v3
+        with:
+          name: xiaomi-pad-6s-pro-kernel
+          path: xiaomi-pad-6s-pro-kernel-${{ github.run_id }}.tar.gz
+          retention-days: 60
+      
+      - name: 创建GitHub Release
+        if: success() && github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: build-${{ github.run_id }}
+          name: "Xiaomi Pad 6S Pro 内核构建 ${{ github.run_id }}"
+          body: |
+            ## 构建详情
+            - **设备**: Xiaomi Pad 6S Pro (${{ env.DEVICE }})
+            - **内核版本**: Linux ${{ env.KERNEL_VERSION }}.x
+            - **处理器**: 骁龙 8 Gen 2 (SM8550)
+            - **工具链**: ${{ env.TOOLCHAIN }}
+            - **Docker支持**: ${{ env.ENABLE_DOCKER }}
+            - **构建时间**: $(date)
+            
+            ## 构建产物
+            - 内核镜像: `Image.gz-dtb`
+            - 内核配置: `kernel_config`
+            - 设备树文件: `dtb/` 目录
+            - 内核模块: `modules/` 目录
+            - 构建信息: `build-info.txt`
+          files: xiaomi-pad-6s-pro-kernel-${{ github.run_id }}.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
