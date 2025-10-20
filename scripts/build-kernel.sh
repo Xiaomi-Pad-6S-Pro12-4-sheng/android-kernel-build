@@ -1,33 +1,26 @@
 #!/bin/bash
-# 统一内核构建脚本 - 修复版
+
+# Xiaomi Pad 6S Pro 内核构建脚本
+# 设备代号: sheng
+# 处理器: 骁龙 8 Gen 2
+# 内核版本: Linux 5.15.x
 
 set -e
 
-# 显示用法说明
-show_usage() {
-    echo "使用方法: $0 [选项]"
-    echo "选项:"
-    echo "  -d, --device DEVICE    指定设备 (mondrian|vermeer|sheng)"
-    echo "  -t, --toolchain TOOLCHAIN 指定工具链 (clang|gcc)"
-    echo "  -c, --clean            清洁构建"
-    echo "  -j, --jobs NUM         并行作业数"
-    echo "  -p, --apply-patches    应用优化补丁"
-    echo "  --enable-docker        启用 Docker 容器支持"
-    echo "  -h, --help            显示此帮助信息"
-    echo ""
-    echo "支持的设备:"
-    echo "  mondrian - 红米 K60 (骁龙8+ Gen 1)"
-    echo "  vermeer  - 红米 K70 (骁龙8 Gen 2)"
-    echo "  sheng    - 小米 Pad 6S Pro (骁龙8 Gen 2)"
-}
+# 确保路径处理正确，兼容不同操作系统
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null || pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null || pwd)"
+
+# 确保路径使用正确的分隔符
+ROOT_DIR=$(echo "$ROOT_DIR" | sed 's/\\/\//g')
+SCRIPT_DIR=$(echo "$SCRIPT_DIR" | sed 's/\\/\//g')
 
 # 默认参数
-DEVICE=""
-TOOLCHAIN="clang"
+DEVICE="sheng"
+KERNEL_VERSION="5.15"
 CLEAN_BUILD=false
-APPLY_PATCHES=true
 ENABLE_DOCKER=false
-JOBS=$(nproc)
+TOOLCHAIN="clang"
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -36,218 +29,215 @@ while [[ $# -gt 0 ]]; do
             DEVICE="$2"
             shift 2
             ;;
-        -t|--toolchain)
-            TOOLCHAIN="$2"
+        -k|--kernel-version)
+            KERNEL_VERSION="$2"
             shift 2
             ;;
         -c|--clean)
             CLEAN_BUILD=true
             shift
             ;;
-        -j|--jobs)
-            JOBS="$2"
-            shift 2
-            ;;
-        -p|--apply-patches)
-            APPLY_PATCHES=$2
-            shift 2
-            ;;
         --enable-docker)
             ENABLE_DOCKER=true
             shift
             ;;
-        -h|--help)
-            show_usage
-            exit 0
+        -t|--toolchain)
+            TOOLCHAIN="$2"
+            shift 2
             ;;
         *)
-            echo "未知参数: $1"
-            show_usage
+            echo "未知选项: $1"
+            echo "使用方法: $0 [-d|--device 设备] [-k|--kernel-version 内核版本] [-c|--clean] [--enable-docker] [-t|--toolchain 工具链]"
             exit 1
             ;;
     esac
 done
 
-# 验证设备参数
-if [ -z "$DEVICE" ]; then
-    echo "❌ 错误: 必须指定设备"
-    show_usage
-    exit 1
+# 加载环境变量
+echo "[*] 加载环境变量..."
+if [ -f "$ROOT_DIR/.env" ]; then
+    source "$ROOT_DIR/.env"
 fi
 
-case $DEVICE in
-    "mondrian"|"vermeer"|"sheng")
-        ;;
-    *)
-        echo "❌ 错误: 不支持的设备 '$DEVICE'"
-        show_usage
-        exit 1
-        ;;
-esac
-
-# 设置构建环境
-echo "🔧 设置构建环境..."
-source scripts/setup-environment.sh
-
-# 下载工具链和依赖
-echo "📥 下载构建依赖..."
-bash scripts/download-toolchains.sh
-bash scripts/download-qcom-deps.sh
-
-echo "🏗️  开始构建 $DEVICE 内核..."
-echo "📋 构建配置:"
-echo "  - 设备: $DEVICE"
-echo "  - 工具链: $TOOLCHAIN"
-echo "  - 并行作业: $JOBS"
-echo "  - 清洁构建: $CLEAN_BUILD"
-echo "  - 应用补丁: $APPLY_PATCHES"
-echo "  - Docker 支持: $ENABLE_DOCKER"
-
-# 设置高通设备环境
-source $QCOM_DIR/environment-setup.sh $DEVICE
-
-# 设置工具链
-case $TOOLCHAIN in
-    "clang")
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CROSS_COMPILE=$TOOLCHAIN_DIR/gcc-arm64/bin/aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=$TOOLCHAIN_DIR/gcc-arm/bin/arm-linux-gnueabi-
-        export CC=$TOOLCHAIN_DIR/aosp-clang/bin/clang
-        export LD_LIBRARY_PATH=$TOOLCHAIN_DIR/aosp-clang/lib64:$LD_LIBRARY_PATH
-        ;;
-    "gcc")
-        export CROSS_COMPILE=$TOOLCHAIN_DIR/gcc-arm64/bin/aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=$TOOLCHAIN_DIR/gcc-arm/bin/arm-linux-gnueabi-
-        export CC=${CROSS_COMPILE}gcc
-        ;;
-    *)
-        echo "❌ 错误: 不支持的工具链 '$TOOLCHAIN'"
-        exit 1
-        ;;
-esac
-
-# 设置输出目录
-export OUT_DIR_DEVICE=$OUT_DIR/$DEVICE
-mkdir -p $OUT_DIR_DEVICE
-
-# 清洁构建（如果请求）
-if [ "$CLEAN_BUILD" = true ]; then
-    echo "🧹 执行清洁构建..."
-    make mrproper || true
-    rm -rf $OUT_DIR_DEVICE
-    mkdir -p $OUT_DIR_DEVICE
+if [ -f "$SCRIPT_DIR/environment-setup.sh" ]; then
+    source "$SCRIPT_DIR/environment-setup.sh"
 fi
 
-# 检查 defconfig 文件是否存在
-DEFCONFIG_FILE="arch/arm64/configs/${DEVICE}_defconfig"
-if [ ! -f "$DEFCONFIG_FILE" ]; then
-    echo "⚠️  警告: 设备 $DEVICE 的 defconfig 文件不存在: $DEFCONFIG_FILE"
-    echo "📝 创建默认 defconfig..."
-    
-    # 创建设备特定的默认配置
-    case $DEVICE in
-        "mondrian")
-            # 红米 K60 默认配置
-            make O=$OUT_DIR_DEVICE vendor/sm8475_defconfig || make O=$OUT_DIR_DEVICE defconfig
-            ;;
-        "vermeer"|"sheng")
-            # 红米 K70/小米 Pad 6S Pro 默认配置
-            make O=$OUT_DIR_DEVICE vendor/sm8550_defconfig || make O=$OUT_DIR_DEVICE defconfig
-            ;;
-    esac
+# 设置路径和变量
+export DEVICE=$DEVICE
+export KERNEL_VERSION=$KERNEL_VERSION
+export OUTPUT_DIR="$ROOT_DIR/out/$DEVICE"
+export KERNEL_DIR="$ROOT_DIR/kernel/$DEVICE"
+export DTB_DIR="$OUTPUT_DIR/dtb"
+export MODULES_DIR="$OUTPUT_DIR/modules"
+export IMAGE_NAME="Image.gz-dtb"
+
+# 创建输出目录
+echo "[*] 创建输出目录..."
+mkdir -p "$OUTPUT_DIR" 2>/dev/null || true
+mkdir -p "$DTB_DIR" 2>/dev/null || true
+mkdir -p "$MODULES_DIR" 2>/dev/null || true
+
+# 确保输出目录权限正确
+chmod -R 755 "$OUTPUT_DIR" 2>/dev/null || true
+
+# 显示构建信息
+echo "==================================================="
+echo "开始构建 Xiaomi Pad 6S Pro 内核"
+echo "设备: $DEVICE"
+echo "内核版本: $KERNEL_VERSION.x"
+echo "处理器: 骁龙 8 Gen 2 (SM8550)"
+echo "工具链: $TOOLCHAIN"
+echo "Docker支持: $([ $ENABLE_DOCKER = true ] && echo "启用" || echo "禁用")"
+echo "清洁构建: $([ $CLEAN_BUILD = true ] && echo "是" || echo "否")"
+echo "==================================================="
+
+# 进入内核目录
+cd "$KERNEL_DIR"
+
+# 清洁构建
+if [ $CLEAN_BUILD = true ]; then
+    echo "[*] 执行清洁构建..."
+    make mrproper
+fi
+
+# 生成默认配置
+echo "[*] 生成内核配置..."
+if [ -f "arch/arm64/configs/${DEVICE}_defconfig" ]; then
+    make O="$OUTPUT_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- ${DEVICE}_defconfig
 else
-    echo "✅ 使用 defconfig: $DEFCONFIG_FILE"
-    make O=$OUT_DIR_DEVICE ${DEVICE}_defconfig
+    echo "[!] 未找到默认配置文件: arch/arm64/configs/${DEVICE}_defconfig"
+    echo "[*] 尝试使用通用配置..."
+    make O="$OUTPUT_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- defconfig
 fi
 
-# 应用平台优化补丁
-if [ "$APPLY_PATCHES" = true ]; then
-    echo "🔧 应用平台优化补丁..."
-    case $QCOM_SOC in
-        "sm8550")
-            if [ -f "$QCOM_DIR/kernel-patches/sm8550-cpu-optimization.patch" ]; then
-                patch -p1 < $QCOM_DIR/kernel-patches/sm8550-cpu-optimization.patch || echo "⚠️  补丁应用失败，继续构建..."
-            fi
-            ;;
-        "sm8475")
-            if [ -f "$QCOM_DIR/kernel-patches/sm8475-gpu-optimization.patch" ]; then
-                patch -p1 < $QCOM_DIR/kernel-patches/sm8475-gpu-optimization.patch || echo "⚠️  补丁应用失败，继续构建..."
-            fi
-            ;;
-    esac
+# 启用Docker支持
+if [ $ENABLE_DOCKER = true ]; then
+    echo "[*] 启用Docker支持..."
+    bash "$SCRIPT_DIR/enable-docker-support.sh"
+    # 验证Docker支持
+    bash "$SCRIPT_DIR/verify-docker-support.sh" "$OUTPUT_DIR/.config"
 fi
 
-# 启用 Docker 支持（如果请求）
-if [ "$ENABLE_DOCKER" = true ]; then
-    echo "🐳 启用 Docker 容器支持..."
-    bash scripts/enable-docker-support.sh
-    bash scripts/device-docker-config.sh $DEVICE
-    
-    # 重新生成配置依赖
-    make O=$OUT_DIR_DEVICE olddefconfig
+# 设置构建命令
+if [ "$TOOLCHAIN" = "clang" ]; then
+    BUILD_CMD="make -j$(nproc) O=$OUTPUT_DIR \
+        ARCH=arm64 \
+        CC=clang \
+        LD=ld.lld \
+        AR=llvm-ar \
+        NM=llvm-nm \
+        OBJCOPY=llvm-objcopy \
+        OBJDUMP=llvm-objdump \
+        STRIP=llvm-strip \
+        CROSS_COMPILE=aarch64-linux-android- \
+        CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+        CLANG_TRIPLE=aarch64-linux-gnu-"
+elif [ "$TOOLCHAIN" = "gcc" ]; then
+    BUILD_CMD="make -j$(nproc) O=$OUTPUT_DIR \
+        ARCH=arm64 \
+        CROSS_COMPILE=aarch64-linux-android- \
+        CROSS_COMPILE_ARM32=arm-linux-androideabi-"
 fi
-
-# 针对不同设备进行特定配置
-case $DEVICE in
-    "sheng")
-        # 平板设备特定配置
-        echo "CONFIG_INPUT_TOUCHSCREEN=y" >> $OUT_DIR_DEVICE/.config
-        echo "CONFIG_TABLET_SPECIFIC=y" >> $OUT_DIR_DEVICE/.config
-        ;;
-    "mondrian"|"vermeer")
-        # 手机设备特定配置
-        echo "CONFIG_MOBILE_OPTIMIZATIONS=y" >> $OUT_DIR_DEVICE/.config
-        ;;
-esac
-
-# 最终配置确认
-make O=$OUT_DIR_DEVICE olddefconfig
 
 # 开始构建内核
-echo "🔨 开始编译内核..."
-if ! make -j$JOBS O=$OUT_DIR_DEVICE \
-    ARCH=$ARCH \
-    CC="$CC" \
-    CROSS_COMPILE=$CROSS_COMPILE \
-    CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32; then
-    echo "❌ 内核编译失败!"
-    echo "🔍 调试信息:"
-    echo "ARCH: $ARCH"
-    echo "CROSS_COMPILE: $CROSS_COMPILE"
-    echo "CC: $CC"
+echo "[*] 开始构建内核..."
+echo "[*] 使用 $(nproc) 个线程进行编译"
+time $BUILD_CMD || {
+    echo "[!] 内核构建失败！"
     exit 1
-fi
-
-# 构建模块
-echo "🔨 编译内核模块..."
-make -j$JOBS O=$OUT_DIR_DEVICE \
-    ARCH=$ARCH \
-    CC="$CC" \
-    CROSS_COMPILE=$CROSS_COMPILE \
-    CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    modules || echo "⚠️  模块编译失败，继续..."
+}
 
 # 构建设备树
-echo "🔨 编译设备树..."
-make -j$JOBS O=$OUT_DIR_DEVICE \
-    ARCH=$ARCH \
-    CC="$CC" \
-    CROSS_COMPILE=$CROSS_COMPILE \
-    dtbs || echo "⚠️  设备树编译失败，继续..."
+echo "[*] 构建设备树..."
+time $BUILD_CMD dtbs || {
+    echo "[!] 设备树构建失败！"
+    exit 1
+}
 
-# 验证构建产物
-echo "🔍 验证构建产物..."
-if [ -f "$OUT_DIR_DEVICE/arch/arm64/boot/Image.gz-dtb" ]; then
-    echo "✅ 内核镜像构建成功: $OUT_DIR_DEVICE/arch/arm64/boot/Image.gz-dtb"
-    ls -lh "$OUT_DIR_DEVICE/arch/arm64/boot/Image.gz-dtb"
-elif [ -f "$OUT_DIR_DEVICE/arch/arm64/boot/Image" ]; then
-    echo "✅ 内核镜像构建成功: $OUT_DIR_DEVICE/arch/arm64/boot/Image"
-    ls -lh "$OUT_DIR_DEVICE/arch/arm64/boot/Image"
+# 构建内核模块
+echo "[*] 构建内核模块..."
+time $BUILD_CMD modules || {
+    echo "[!] 内核模块构建失败！"
+    exit 1
+}
+
+# 安装内核模块
+echo "[*] 安装内核模块..."
+time $BUILD_CMD O=$OUTPUT_DIR INSTALL_MOD_PATH=$MODULES_DIR modules_install || {
+    echo "[!] 内核模块安装失败！"
+    exit 1
+}
+
+# 复制内核镜像
+echo "[*] 复制内核镜像..."
+if [ -f "$OUTPUT_DIR/arch/arm64/boot/Image.gz-dtb" ]; then
+    cp "$OUTPUT_DIR/arch/arm64/boot/Image.gz-dtb" "$OUTPUT_DIR/$IMAGE_NAME"
+    echo "[*] 内核镜像: $OUTPUT_DIR/$IMAGE_NAME"
+elif [ -f "$OUTPUT_DIR/arch/arm64/boot/Image.gz" ] && [ -f "$OUTPUT_DIR/arch/arm64/boot/dts/qcom/sm8550-xiaomi-${DEVICE}.dtb" ]; then
+    # 如果Image.gz和dtb是分开的，尝试合并它们
+    cat "$OUTPUT_DIR/arch/arm64/boot/Image.gz" "$OUTPUT_DIR/arch/arm64/boot/dts/qcom/sm8550-xiaomi-${DEVICE}.dtb" > "$OUTPUT_DIR/$IMAGE_NAME"
+    echo "[*] 内核镜像已合并: $OUTPUT_DIR/$IMAGE_NAME"
 else
-    echo "❌ 错误: 内核镜像未找到!"
-    echo "📁 输出目录内容:"
-    ls -la "$OUT_DIR_DEVICE/arch/arm64/boot/"
+    echo "[!] 找不到内核镜像文件！"
     exit 1
 fi
 
-echo "✅ 内核构建完成!"
+# 复制设备树文件
+echo "[*] 复制设备树文件..."
+cp -r "$OUTPUT_DIR/arch/arm64/boot/dts/qcom"/* "$DTB_DIR/" 2>/dev/null || true
+
+# 复制配置文件
+echo "[*] 复制配置文件..."
+cp "$OUTPUT_DIR/.config" "$OUTPUT_DIR/kernel_config"
+
+# 生成构建信息文件
+echo "[*] 生成构建信息..."
+cat > "$OUTPUT_DIR/build-info.txt" << EOF
+# Xiaomi Pad 6S Pro 内核构建信息
+设备: $DEVICE (Xiaomi Pad 6S Pro)
+处理器: 骁龙 8 Gen 2 (SM8550)
+内核版本: Linux $KERNEL_VERSION.x
+构建时间: $(date)
+构建工具: $TOOLCHAIN
+Docker支持: $([ $ENABLE_DOCKER = true ] && echo "是" || echo "否")
+构建主机: $(hostname)
+内核配置: kernel_config
+内核镜像: $IMAGE_NAME
+设备树目录: dtb/
+模块目录: modules/
+EOF
+
+# 验证构建结果
+echo "==================================================="
+echo "构建验证:"
+if [ -f "$OUTPUT_DIR/$IMAGE_NAME" ]; then
+    echo "✅ 内核镜像: $OUTPUT_DIR/$IMAGE_NAME"
+    echo "   大小: $(du -h "$OUTPUT_DIR/$IMAGE_NAME" | cut -f1)"
+else
+    echo "❌ 内核镜像不存在！"
+fi
+
+if [ -d "$DTB_DIR" ] && [ "$(ls -A "$DTB_DIR" 2>/dev/null)" ]; then
+    echo "✅ 设备树文件: $DTB_DIR/"
+    echo "   文件数: $(ls -1 "$DTB_DIR" | wc -l)"
+else
+    echo "⚠️  设备树目录可能为空"
+fi
+
+if [ -d "$MODULES_DIR/lib/modules" ]; then
+    echo "✅ 内核模块: $MODULES_DIR/lib/modules/"
+    echo "   模块数: $(find "$MODULES_DIR/lib/modules" -name "*.ko" | wc -l)"
+else
+    echo "⚠️  内核模块目录可能为空"
+fi
+
+echo "==================================================="
+echo "构建完成！"
+echo "所有构建产物位于: $OUTPUT_DIR"
+echo "==================================================="
+echo "您可以使用以下命令刷入内核:"
+echo "fastboot flash boot $OUTPUT_DIR/$IMAGE_NAME"
+echo "或者刷入到recovery分区:"
+echo "fastboot flash recovery $OUTPUT_DIR/$IMAGE_NAME"
+echo "==================================================="

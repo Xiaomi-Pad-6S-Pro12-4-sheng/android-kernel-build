@@ -1,62 +1,61 @@
 #!/bin/bash
-# 快速启动构建脚本
 
-set -e
+# Xiaomi Pad 6S Pro 内核构建快速启动脚本
+# 设备代号: sheng
+# 处理器: 骁龙 8 Gen 2
+# 内核版本: Linux 5.15.x
 
-echo "🚀 Android 内核构建快速启动"
+echo "==================================================="
+echo "Xiaomi Pad 6S Pro 内核构建工具"
+echo "设备: sheng | 处理器: 骁龙 8 Gen 2 | 内核: 5.15.x"
+echo "==================================================="
 
-# 检查是否在正确的目录
-if [ ! -f "scripts/build-kernel.sh" ]; then
-    echo "❌ 错误: 请在项目根目录运行此脚本"
-    exit 1
-fi
+# 检查脚本目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# 创建设备选择菜单
-echo ""
-echo "📱 请选择要构建的设备:"
-echo "1. 红米 K60 (mondrian)"
-echo "2. 红米 K70 (vermeer)" 
-echo "3. 小米 Pad 6S Pro (sheng)"
-echo "4. 全部设备"
-echo ""
+echo -e "\n请选择您要执行的操作:"
+echo "1. 设置构建环境"
+echo "2. 下载依赖和工具链"
+echo "3. 构建标准内核"
+echo "4. 构建支持Docker的内核"
+echo "5. 在线构建内核（查看GitHub Actions）"
+echo "0. 退出"
 
-read -p "请输入选择 (1-4): " choice
+read -p "请输入选项 [0-5]: " choice
 
-case $choice in
+case "$choice" in
     1)
-        DEVICE="mondrian"
+        echo -e "\n[*] 设置构建环境..."
+        bash scripts/setup-environment.sh
         ;;
     2)
-        DEVICE="vermeer"
+        echo -e "\n[*] 下载工具链..."
+        bash scripts/download-toolchains.sh
+        echo -e "\n[*] 下载高通依赖..."
+        bash scripts/download-qcom-deps.sh
         ;;
     3)
-        DEVICE="sheng"
+        echo -e "\n[*] 构建标准内核..."
+        bash scripts/build-kernel.sh -d sheng -k 5.15
         ;;
     4)
-        echo "🔨 构建所有设备..."
-        for device in mondrian vermeer sheng; do
-            echo "构建设备: $device"
-            bash scripts/build-kernel.sh --device $device --toolchain clang
-        done
+        echo -e "\n[*] 构建支持Docker的内核..."
+        bash scripts/build-kernel.sh -d sheng -k 5.15 --enable-docker
+        ;;
+    5)
+        echo -e "\n[*] 打开GitHub Actions页面..."
+        echo "请访问项目的GitHub仓库，进入Actions标签页运行构建工作流"
+        echo "URL: https://github.com/[您的用户名]/android-kernel-build/actions"
+        ;;
+    0)
+        echo -e "\n感谢使用，再见！"
         exit 0
         ;;
     *)
-        echo "❌ 无效选择"
+        echo -e "\n无效选项，请重新运行脚本并选择有效的选项。"
         exit 1
         ;;
 esac
 
-# 创建基础配置（如果不存在）
-if [ ! -f "arch/arm64/configs/${DEVICE}_defconfig" ]; then
-    echo "📝 创建基础配置文件..."
-    bash scripts/create-default-configs.sh
-fi
-
-# 开始构建
-echo "🔨 开始构建 $DEVICE 内核..."
-bash scripts/build-kernel.sh \
-    --device $DEVICE \
-    --toolchain clang \
-    --jobs $(nproc)
-
-echo "✅ 构建完成!"
+echo -e "\n[*] 操作完成！"
